@@ -1,0 +1,18 @@
+# inference_snippet.py
+import pandas as pd
+from catboost import CatBoostRanker
+RANK_COLS = ["distance_km","inv_distance","log_distance","rank_by_distance","hours",
+             "poi_pop_local","eta_walk_min","stay_min","semantic_cos","token_overlap","interest_match_count",
+             "kind_match","view_hint","eta_fit",
+             "hb_le1","hb_1_2","hb_2_3","hb_gt3","hb_unknown",
+             "kind_cafe","kind_dessert","kind_museum","kind_viewpoint","kind_street_art","kind_historic","kind_architecture","kind_park"]
+
+ranker = CatBoostRanker(); ranker.load_model("poi_ranker.cbm")
+
+def rank_for_query(features_parquet:str, query_id:str, top_k:int=12):
+    df = pd.read_parquet(features_parquet)
+    df = df[df["query_id"]==query_id].copy()
+    if df.empty: return []
+    df["score"] = ranker.predict(df[RANK_COLS])
+    top = df.sort_values("score", ascending=False).head(top_k)
+    return top[["poi_id","name","kind","distance_km","score"]].to_dict("records")

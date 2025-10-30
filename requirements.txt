@@ -1,0 +1,8 @@
+numpy==2.1.2
+scipy==1.14.1
+pandas==2.2.3
+catboost==1.2.5
+aiogram==3.4.1
+python-dotenv>=1.0
+requests>=2.32
+pyarrow>=16
