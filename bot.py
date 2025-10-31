@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart
 from dotenv import load_dotenv
-
+from geo_utils import parse_start
 load_dotenv()
 
 # ------------ Конфиг ------------
@@ -12,14 +12,16 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "you@example.com")
 POI_CSV = os.getenv("POI_CSV", "poi_csv.csv")
 MODEL_PATH = os.getenv("MODEL_PATH", "poi_ranker.cbm")
-MODEL_FEATURES = os.getenv("MODEL_FEATURES", "model_features.json")  # список признаков в нужном порядке
+MODEL_FEATURES = os.getenv("MODEL_FEATURES", "model_features.json")
 
-USE_MODEL = True                      # можешь выключить модель, оставив фолбэк
-WALK_SPEED_MPS = 3.6                  # скорость пешком
-STOPS_COUNT   = 5                     # всегда 5 точек
-CAND_POOL     = 60                    # сколько кандидатов брать на ранжирование
-MIN_DWELL_S   = 5 * 60
-MAX_DWELL_S   = 25 * 60
+USE_MODEL = True
+
+# >>> изменено: фиксированная остановка 3 мин и скорость 1.6 м/с <<<
+WALK_SPEED_MPS = 1.6
+CAND_POOL      = 60
+STOP_FIXED_S   = 3 * 60
+TIME_TOL       = 0.20
+# <<<
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(TOKEN)
@@ -36,7 +38,6 @@ ALIASES = {
     "добролюб":"улица Добролюбова","ковалихин":"улица Ковалихинская","звездинк":"улица Звездинка",
 }
 INTERESTS = {
-    # ===== ЕДА / НАПИТКИ =====
     "coffee": {"кофе","кофей","coffee","эспрессо","espresso","капучино","латте","раф","флэт уайт","aeropress","аэропресс","v60","спешалти","specialty"},
     "tea": {"чай","tea","матча","маття","пуэр","улун","сенча","гойчай"},
     "dessert": {"десерт","пирожн","эклер","макарон","чизкейк","маффин","кейк","штрудель","тирамису","выпечк","торт","морожен","ice cream","gelato"},
@@ -68,8 +69,6 @@ INTERESTS = {
     "bar": {"бар","pub","паб","винн","вино","винный","сидр","крафт","пивн","brewery","пивовар","коктейл","cocktail","mixology","speakeasy","роофтап","rooftop"},
     "hookah": {"кальян","hookah","shisha"},
     "rooftop": {"rooftop","крыша","панорамный бар","видовой бар"},
-
-    # ===== ИСКУССТВО / КУЛЬТУРА =====
     "street_art": {"стрит-арт","street art","мурал","муралы","граффити"},
     "gallery": {"галере","арт-цент","выставк","арт-пространств","art space","центр соврем"},
     "museum": {"музей","экспозици","ретро","диорама"},
@@ -79,8 +78,6 @@ INTERESTS = {
     "monument": {"памятник","монумент","скульптур","стела","бюст"},
     "library": {"библиотек","читальн","mediatheque"},
     "bookstore": {"книжн","bookshop","bookstore"},
-
-    # ===== ИСТОРИЯ / АРХИТЕКТУРА / РЕЛИГИЯ =====
     "history": {"историческ","купеческ","кремль","арсенал","фортификац","краевед","музей истории"},
     "architecture": {"архитектур","фасад","особняк","доходн","усадебн","памятник архитектуры","ордер","пилястр"},
     "baroque": {"барокк"},
@@ -98,8 +95,6 @@ INTERESTS = {
     "church": {"церковь","собор","храм","колокольн","монастыр","часовн","лавра"},
     "mosque": {"мечет"},
     "synagogue": {"синагог"},
-
-    # ===== ПРИРОДА / ВИДЫ / НАБЕРЕЖНЫЕ =====
     "view": {"вид","виды","панорама","обзорная","обзорн","viewpoint","смотор","белведер","колесо обозр"},
     "embankment": {"набережн","бережн","boulevard","bulvar","бульвар"},
     "river_volga": {"волга","стрелка","ярмарочн площад"},
@@ -107,8 +102,6 @@ INTERESTS = {
     "park": {"парк","сквер","сад","ботаническ","дендрар","аллея"},
     "nature": {"лес","роща","овраг","ущелье","утес","берег","пляж","остров","луга","речн"},
     "garden": {"сад","оранжере","ботсад"},
-
-    # ===== СЕМЬЯ / ДЕТИ / РАЗВЛЕЧЕНИЯ / СПОРТ =====
     "kids": {"дет","коляск","семейн","игровая площад","playground","детск"},
     "amusements": {"аттракцион","колесо обозр","парк развлечен","тир","квест","батут"},
     "zoo": {"зоопарк","дельфинари","террариум","аквариум","питомник"},
@@ -117,37 +110,27 @@ INTERESTS = {
     "swim": {"бассейн","аквапарк","сауна","термы","термальный"},
     "climb": {"скалодром","скалолаз"},
     "bike": {"велодорожк","прокат велосипед","bikeshare","самокат"},
-
-    # ===== ШОПИНГ / РЫНКИ / ЯРМАРКИ =====
     "market": {"рынок","ярмарк","базар","фермерск","экомаркет","фудкорт","фуд-холл","gastronom","food hall"},
     "mall": {"тц","торговый центр","mall","outlet","аутлет"},
     "souvenir": {"сувенир","керамик","хохлом","гжель","резьб","ремесл","handmade","craft"},
     "vintage": {"винтаж","блош","flea","секонд","second hand","комиссионн"},
     "antique": {"антиквар","антик"},
-
-    # ===== ОБРАЗОВАНИЕ / ТЕХНО / ПЛАНЕТАРИИ =====
     "university": {"университет","вуз","кампус","академ"},
     "science": {"научн","лаборатор","лектор","просветител"},
     "planetarium": {"планетарий","обсерватор"},
     "tech": {"технопарк","айти","it-парк","кластер","коворкинг","makerspace","фаблаб","лаборатори"},
     "library_science": {"научная библиотек","техн библиотек"},
-
-    # ===== ТРАНСПОРТ / ИНФРА =====
     "railway": {"вокзал","железнодорож","депо","электродепо","ретро-поезд","музей ж/д","станция"},
     "tram_museum": {"трамвайн музей","трамвайное депо"},
     "bridge": {"мост","переправ","эстакад"},
     "pier": {"пристан","пирс","причал","river port","речной вокзал"},
     "cable_car": {"канатная дорог","ropeway","канатк","фуникулер","фуникулёр"},
-
-    # ===== ФОТО / НОЧНАЯ ЖИЗНЬ =====
     "photo": {"фото","фотогенич","инстаграм","insta","ракурс","фотозон","street photo","sunset","закат","рассвет"},
     "nightclub": {"клуб","night club","ночн клуб"},
     "karaoke": {"караоке"},
     "concert": {"концерт","live","джаз-клуб","рок-клуб"},
 }
 
-
-# ------------ Гео/парсинг ------------
 COORD_RX = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*[, ]\s*(-?\d+(?:[.,]\d+)?)")
 SPAN_RX  = re.compile(r"(?:от|старт(?:ую)?(?:\s+от)?|я у|я возле|у|рядом с)\s+([^.,;:!?]+)", re.I)
 
@@ -173,7 +156,7 @@ def _address_hints(text:str):
     for k,v in ALIASES.items():
         if k in low: hints.append(v)
     if not hints: hints.append(t[:120])
-    return list(dict.fromkeys([s.strip(' "\'«»') for s in hints if s.strip()]))
+    return list(dict.fromkeys([s.strip(' \"\'«»') for s in hints if s.strip()]))
 
 def parse_start(text:str):
     m=COORD_RX.search(text)
@@ -206,7 +189,6 @@ def canon_interests(raw_list):
             got.add(k)
     return got
 
-# ------------ POI и признаки ------------
 def _parse_wkt_point(s:str):
     if not isinstance(s,str): return None
     try:
@@ -222,8 +204,6 @@ def load_poi(path=POI_CSV):
     df["lat"]=c.apply(lambda x: x[0] if x else None)
     df["lon"]=c.apply(lambda x: x[1] if x else None)
     df=df.dropna(subset=["lat","lon"]).copy()
-
-    # авто-теги из текста
     def tags_for(row):
         t=(str(row.get("title",""))+" "+str(row.get("description",""))).lower()
         tags=set()
@@ -231,17 +211,14 @@ def load_poi(path=POI_CSV):
             if any(w in t for w in v): tags.add(k)
         return tags
     df["__tags__"]=df.apply(tags_for, axis=1)
-    # безопасные поля: popularity/rating/kind если есть
     for col in ["popularity","rating","kind"]:
         if col not in df.columns: df[col]=None
-    # id нужен для маршрута
     if "id" not in df.columns:
         df["id"] = range(1, len(df)+1)
     return df
 
 POI = load_poi()
 
-# Попытка загрузить модель и список признаков
 model = None
 feature_names = None
 if USE_MODEL:
@@ -256,11 +233,9 @@ if USE_MODEL:
                     feature_names = json.load(f)
                 logging.info("Загружен список признаков: %s", MODEL_FEATURES)
             else:
-                # дефолтный набор (должен совпасть с train_ranker.py)
                 feature_names = [
                     "dist_m","inv_dist","tags_overlap","query_len","hours",
                     "poi_popularity","poi_rating",
-                    # бинарные интересы (one-hot) — устойчиво и прозрачно
                     *[f"want_{k}" for k in sorted(INTERESTS.keys())],
                 ]
                 logging.warning("Файл с признаками не найден, используем дефолт: %d фич", len(feature_names))
@@ -272,10 +247,8 @@ if USE_MODEL:
         USE_MODEL = False
 
 def build_candidate_features(lat0, lon0, text_raw, hours, want_tags, pool=CAND_POOL):
-    """Возвращает список (df, rows_meta) — df с признаками для модели, rows_meta для сборки ответа."""
     import pandas as pd
-    rows_meta=[]
-    feats=[]
+    rows_meta=[]; feats=[]
     base_text = text_raw.lower()
     want_onehot = {f"want_{k}": (1 if k in want_tags else 0) for k in INTERESTS.keys()}
     for r in POI.itertuples(index=False):
@@ -292,20 +265,17 @@ def build_candidate_features(lat0, lon0, text_raw, hours, want_tags, pool=CAND_P
             "poi_rating": float(getattr(r, "rating", 0) or 0),
             **{f"want_{k}": want_onehot[f"want_{k}"] for k in INTERESTS.keys()},
         })
-    # отсортировать верхний пул по простому скору (чтобы не кормить модель весь город)
     rows_tmp = sorted(zip(feats, rows_meta), key=lambda x: (-x[0]["tags_overlap"], x[0]["dist_m"]))[:pool]
     feats = [x[0] for x in rows_tmp]
     rows_meta = [x[1] for x in rows_tmp]
-    # dataframe + упорядочить/добить признаки
+    import pandas as pd
     df = pd.DataFrame(feats)
-    # приведём к ожидаемому порядку, недостающие — нули, лишние — отбросим
     global feature_names
     for col in feature_names:
         if col not in df.columns: df[col] = 0.0
     df = df[[c for c in feature_names if c in df.columns]]
     return df, rows_meta
 
-# ------------ Ранжирование + маршрут/тайминг ------------
 def rank_candidates(lat0, lon0, want_tags, text_raw, hours):
     if USE_MODEL and model is not None:
         X, meta = build_candidate_features(lat0, lon0, text_raw, hours, want_tags, pool=CAND_POOL)
@@ -313,7 +283,6 @@ def rank_candidates(lat0, lon0, want_tags, text_raw, hours):
         scored = list(zip(preds, meta))
         scored.sort(key=lambda x: float(x[0]), reverse=True)
         return [(None, dist, r, ov) for (pred, (dist, r, ov)) in scored]
-    # фолбэк-правила
     rows=[]
     for r in POI.itertuples(index=False):
         dist = haversine(lat0, lon0, r.lat, r.lon)
@@ -330,77 +299,121 @@ def rank_candidates(lat0, lon0, want_tags, text_raw, hours):
 def build_route(lat0, lon0, hours, interests_raw, text_raw):
     want = canon_interests(interests_raw)
     cand = rank_candidates(lat0, lon0, want, text_raw, hours)
-    route=[]; used=set(); cur=(lat0,lon0)
-    # жадный выбор 5 точек
-    while len(route) < STOPS_COUNT and cand:
-        best=None
-        for sc,_,r,ov in cand[:20]:
-            if r.id in used: continue
-            d = haversine(cur[0],cur[1], r.lat, r.lon)
-            val = (1.5*ov if want else 0.0) - d/500.0 - 0.05*len(route)
-            if (best is None) or (val > best[0]): best=(val,d,r,ov)
-        if best is None: break
-        _, d, r, ov = best
-        route.append((r,d))
-        used.add(r.id); cur=(r.lat,r.lon)
-    # если не хватило — доберём ближайшими
-    i=0
-    while len(route)<STOPS_COUNT and i<len(cand):
-        r=cand[i][2]
-        if r.id not in used:
-            d=haversine(cur[0],cur[1], r.lat, r.lon)
-            route.append((r,d)); used.add(r.id); cur=(r.lat,r.lon)
-        i+=1
-    # тайминг под заданные часы
-    walk_dist = sum(d for _,d in route)
-    walk_time = walk_dist / WALK_SPEED_MPS
+
     target = (hours if hours else 2.0) * 3600.0
-    dwell_total = max(0.0, target - walk_time)
-    per_stop = dwell_total / max(1,len(route))
-    per_stop = max(MIN_DWELL_S, min(MAX_DWELL_S, per_stop))
-    total_time = walk_time + per_stop*len(route)
-    return route, walk_dist, walk_time, per_stop, total_time
+    route = []
+    used = set()
+    cur = (lat0, lon0)
+    walk_dist = 0.0
+
+    for _, _, r, _ in cand:
+        if r.id in used:
+            continue
+        leg = haversine(cur[0], cur[1], r.lat, r.lon)
+        total_if_add = (walk_dist + leg) / WALK_SPEED_MPS + STOP_FIXED_S * (len(route) + 1)
+        if total_if_add <= target * (1 + TIME_TOL) or not route:
+            route.append((r, leg))
+            used.add(r.id)
+            walk_dist += leg
+            cur = (r.lat, r.lon)
+            if ((walk_dist / WALK_SPEED_MPS) + STOP_FIXED_S * len(route)) >= target * (1 - TIME_TOL):
+                break
+
+    walk_time = walk_dist / WALK_SPEED_MPS
+    total_time = walk_time + STOP_FIXED_S * len(route)
+    return route, walk_dist, walk_time, total_time
 
 def hhmm(seconds):
     m = int(round(seconds/60.0))
     h, m = divmod(m, 60)
     return (f"{h} ч {m:02d} мин" if h else f"{m} мин")
 
+# ---------------- Диалог на 3 шага ----------------
+SESS = {}  # user_id -> {"step": "addr|time|int", "addr":..., "lat":..., "lon":..., "hours":..., "interests":...}
+
+def _parse_hours_loose(text: str):
+    t = text.lower().strip()
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*час", t)
+    if m:
+        return float(m.group(1).replace(",", "."))
+    m = re.search(r"(\d+)\s*мин", t)
+    if m:
+        return max(0.5, int(m.group(1))/60.0)
+    # просто число трактуем как часы
+    m = re.fullmatch(r"\d+(?:[.,]\d+)?", t)
+    if m:
+        return float(m.group(0).replace(",", "."))
+    return None
+
 # ------------ Handlers ------------
 @dp.message(CommandStart())
 async def on_start(m:Message):
-    mode = "AI-модель" if (USE_MODEL and model is not None) else "правила"
-    await m.answer(
-        f"Готов строить прогулки (режим: {mode}).\n"
-        "Напиши: «2 часа от Чкаловской лестницы, архитектура и виды» "
-        "или «56.328, 44.005, 1.5 часа, стрит-арт, кофе»."
-    )
+    SESS[m.from_user.id] = {"step": "addr"}
+    await m.answer("Шаг 1/3. Укажи адрес старта или координаты «56.328, 44.005». Напиши «сброс» чтобы начать заново.")
 
-@dp.message(F.text.len()>0)
+@dp.message(F.text.casefold() == "сброс")
+async def on_reset(m: Message):
+    SESS[m.from_user.id] = {"step": "addr"}
+    await m.answer("Ок. Шаг 1/3. Адрес старта или координаты?")
+
+@dp.message(F.text.len() > 0)
 async def on_text(m:Message):
-    lat, lon, where = parse_start(m.text)
-    if lat is None:
-        await m.answer("Не распознал старт. Укажи адрес или координаты.")
+    uid = m.from_user.id
+    state = SESS.get(uid)
+    if not state:
+        # если диалога нет — запускаем
+        SESS[uid] = {"step": "addr"}
+        await m.answer("Шаг 1/3. Адрес старта или координаты?")
         return
-    parts=[p.strip() for p in m.text.split(",")]
-    interests = parts[1:] if len(parts)>1 else []
-    hours = parse_hours(m.text)
-    route, walk_dist, walk_time, dwell_per_stop, total_time = build_route(lat, lon, hours, interests, m.text)
 
-    lines=[f"Старт: {where}",
-           f"Цель: ~{(hours or 2.0):g} ч • План: ходьба {hhmm(walk_time)} + остановки по {hhmm(dwell_per_stop)} × {len(route)} = {hhmm(total_time)}",
-           ""]
-    t0 = datetime.datetime.now()
-    cur=(lat,lon); tsec=0.0
-    for i,(r,d) in enumerate(route,1):
-        walk_seg = d / WALK_SPEED_MPS
-        tsec += walk_seg
-        eta = (t0 + datetime.timedelta(seconds=tsec)).strftime("%H:%M")
-        title = getattr(r,"title","Без названия")
-        lines.append(f"{i}) {title} • {int(d)} м пешком • прибытие ~{eta}")
-        tsec += dwell_per_stop
-        cur=(r.lat,r.lon)
-    await m.answer("\n".join(lines))
+    step = state["step"]
+
+    if step == "addr":
+        lat, lon, where = parse_start(m.text)
+        if lat is None:
+            await m.answer("Не распознал старт. Отправь адрес или координаты в формате «56.328, 44.005».")
+            return
+        state.update({"lat": lat, "lon": lon, "where": where, "step": "time"})
+        await m.answer("Шаг 2/3. Сколько времени на прогулку? Примеры: «2 часа», «1.5», «45 минут».")
+        return
+
+    if step == "time":
+        hours = _parse_hours_loose(m.text)
+        if hours is None or hours <= 0:
+            await m.answer("Не понял время. Напиши число часов, например: 2, 1.5 или «45 минут».")
+            return
+        state.update({"hours": hours, "step": "int"})
+        await m.answer("Шаг 3/3. Интересы через запятую. Примеры: «архитектура, кофе», «музеи, виды», «стрит-арт».")
+        return
+
+    if step == "int":
+        # интересы — как есть, в список
+        parts = [p.strip() for p in m.text.split(",") if p.strip()]
+        lat, lon, where = state["lat"], state["lon"], state["where"]
+        hours = state["hours"]
+
+        route, walk_dist, walk_time, total_time = build_route(lat, lon, hours, parts, m.text)
+
+        lines = [
+            f"Старт: {where}",
+            f"Цель: ~{hours:g} ч • План: ходьба {hhmm(walk_time)} + остановки по {hhmm(STOP_FIXED_S)} × {len(route)} = {hhmm(total_time)}",
+            ""
+        ]
+        t0 = datetime.datetime.now()
+        cur=(lat,lon); tsec=0.0
+        for i,(r,d) in enumerate(route,1):
+            walk_seg = d / WALK_SPEED_MPS
+            tsec += walk_seg
+            eta = (t0 + datetime.timedelta(seconds=tsec)).strftime("%H:%M")
+            title = getattr(r,"title","Без названия")
+            lines.append(f"{i}) {title} • {int(d)} м пешком • прибытие ~{eta}")
+            tsec += STOP_FIXED_S
+            cur=(r.lat,r.lon)
+
+        await m.answer("\n".join(lines))
+        # завершаем диалог
+        SESS.pop(uid, None)
+        return
 
 # ------------ Main ------------
 async def main():

@@ -1,59 +1,126 @@
-import re, requests
+# geo_utils.py
+import os
+import re
+import requests
 
-def build_aliases():
-    return {
-        "чкаловск": "Чкаловская лестница",
-        "пл. минина": "площадь Минина и Пожарского",
-        "московск": "Московский вокзал",
-        "ильинк": "улица Ильинская",
-        "нижне-волж": "Нижне-Волжская набережная",
-        "верхне-волж": "Верхне-Волжская набережная",
-        "покровск": "улица Большая Покровская",
-        "федоровск": "наб. Федоровского",
-        "стрелк": "метро Стрелка",
-        "канат": "Канатная дорога Нижний Новгород",
-        "варварск": "улица Варварская",
-        "сенная": "площадь Сенная",
-        "добролюб": "улица Добролюбова",
-        "ковалихин": "улица Ковалихинская",
-        "звездинк": "улица Звездинка",
-    }
+CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "you@example.com")
 
-COORD_RX = re.compile(r'(-?\d+(?:[.,]\d+)?)\s*[, ]\s*(-?\d+(?:[.,]\d+)?)')
-SPAN_RX  = re.compile(r'(?:от|старт(?:ую)?(?:\s+от)?|я у|я возле|у|рядом с)\s+([^.,;:!?]+)', re.I)
+# координаты вида "56.32, 44.01"
+COORD_RX = re.compile(r"([+-]?\d{1,2}(?:[.,]\d+))\s*[, ]\s*([+-]?\d{1,3}(?:[.,]\d+))")
 
-def _address_hints(text: str):
-    t = text.strip(); hints=[]
-    m = COORD_RX.search(t)
+# хватаем кусок после маркеров "я на/у, старт от, рядом с ..."
+SPAN_RX  = re.compile(r"(?:^|\b)(?:от|старт(?:ую)?(?:\s+от)?|я у|я возле|я на|на|у|рядом с)\s+([^.,;:!?]+)", re.I)
+
+# простая форма: тип + имя (в одном падеже)
+SIMPLE_ADDR_RX = re.compile(
+    r"\b(улиц[аыеиу]|ул\.?|площад[ьиью]|пл\.?|набережн(?:ая|ой|ую|е)|наб\.?)\s+([А-ЯЁA-Z][\w\-]+)",
+    re.I
+)
+
+# приведение косвенных падежей к нормальной форме слова типа
+def _normalize_type(s: str) -> str:
+    t = s.lower().strip(" .")
+    if t.startswith(("ул", "улиц")):       return "улица"
+    if t.startswith(("пл", "площад")):     return "площадь"
+    if t.startswith(("наб", "набережн")):  return "набережная"
+    return s
+
+# очень простая «лемматизация» последнего прилагательного: Львовской → Львовская, Советской → Советская
+def _adj_feminative_nom(word: str) -> str:
+    w = word
+    if w.endswith("ской"):   return w[:-3] + "ская"
+    if w.endswith("цкой"):   return w[:-3] + "цкая"
+    if w.endswith("ой"):     return w[:-2] + "ая"
+    if w.endswith("ей"):     return w[:-2] + "ея"
+    return w
+
+def _canon_toponym(text: str) -> str:
+    """
+    Делает «на улице Львовской» → «улица Львовская»,
+    «набережной Федоровского» → «набережная Федоровского».
+    """
+    s = text.strip(' "\'«»')
+    # сначала попробуем простой «тип + имя»
+    m = SIMPLE_ADDR_RX.search(s)
     if m:
-        lat = m.group(1).replace(",", "."); lon = m.group(2).replace(",", ".")
-        return [f"{lat},{lon}"]
-    m = SPAN_RX.search(t)
-    if m: hints.append(m.group(1).strip())
-    for pat in [" на ", " от ", " у "]:
-        i = t.lower().find(pat)
-        if i >= 0: hints.append(t[i+len(pat):].split(".")[0][:80])
-    low = t.lower()
-    for k,v in build_aliases().items():
-        if k in low: hints.append(v)
-    if not hints: hints.append(t[:120])
-    return list(dict.fromkeys([s.strip(' "\'«»') for s in hints if s.strip()]))
+        typ = _normalize_type(m.group(1))
+        name = _adj_feminative_nom(m.group(2))
+        return f"{typ} {name}"
 
-def parse_start(text: str, contact_email: str):
+    # иначе если это просто кусок после "я на/у/от ..."
+    m = SPAN_RX.search(s)
+    if m:
+        frag = m.group(1).strip()
+        # попытка выровнять тип
+        mm = SIMPLE_ADDR_RX.search(frag)
+        if mm:
+            typ = _normalize_type(mm.group(1))
+            name = _adj_feminative_nom(mm.group(2))
+            return f"{typ} {name}"
+        # если «улице Львовской» без явного матча
+        frag = re.sub(r"\b(улице|улицу|улицы|ул\.)\b", "улица", frag, flags=re.I)
+        frag = re.sub(r"\b(площади|площадью|пл\.)\b", "площадь", frag, flags=re.I)
+        frag = re.sub(r"\b(набережной|набережную|наб\.)\b", "набережная", frag, flags=re.I)
+        # последнее слово как имя
+        parts = frag.split()
+        if parts and parts[0].lower() in {"улица", "площадь", "набережная"}:
+            parts[-1] = _adj_feminative_nom(parts[-1])
+            return " ".join(parts)
+        return frag
+
+    return s
+
+def _iter_hints(text: str):
+    """
+    Генерирует варианты подсказок для геокодера от более «умных» к более общим.
+    """
+    # 1) нормализованный кусок после «я на/у/рядом с …»
+    m = SPAN_RX.search(text)
+    if m:
+        yield _canon_toponym(m.group(0))
+
+    # 2) простая форма «тип + имя»
+    m = SIMPLE_ADDR_RX.search(text)
+    if m:
+        typ = _normalize_type(m.group(1))
+        name = _adj_feminative_nom(m.group(2))
+        yield f"{typ} {name}"
+
+    # 3) сырая строка как есть
+    tail = text.strip(' "\'«»')
+    if tail:
+        yield tail
+
+def parse_start(text: str):
+    """
+    Возвращает (lat, lon, display) или (None, None, reason).
+    """
+    # 1) голые координаты
     m = COORD_RX.search(text)
     if m:
-        lat=float(m.group(1).replace(",", ".")); lon=float(m.group(2).replace(",", "."))
+        lat = float(m.group(1).replace(",", "."))
+        lon = float(m.group(2).replace(",", "."))
         return lat, lon, f"{lat:.5f},{lon:.5f}"
-    ua = f"tg-bot/route (+{contact_email})"
-    for hint in _address_hints(text):
-        q = hint if "нижн" in hint.lower() else f"{hint}, Нижний Новгород, Россия"
+
+    ua = f"tg-bot/route ({CONTACT_EMAIL})"
+    for hint in _iter_hints(text):
+        q = _canon_toponym(hint)
+        # добавим город, если не указан
+        if "нижн" not in q.lower():
+            q = f"{q}, Нижний Новгород, Россия"
         try:
-            r = requests.get("https://nominatim.openstreetmap.org/search",
-                             params={"q":q,"format":"jsonv2","limit":1},
-                             headers={"User-Agent": ua}, timeout=15)
-            if r.ok and r.json():
-                j = r.json()[0]
-                return float(j["lat"]), float(j["lon"]), j.get("display_name", hint)
+            r = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": q, "format": "jsonv2", "limit": 1},
+                headers={"User-Agent": ua},
+                timeout=10,
+            )
+            if r.ok:
+                js = r.json()
+                if js:
+                    j = js[0]
+                    return float(j["lat"]), float(j["lon"]), j.get("display_name", q)
         except Exception:
             pass
+
     return None, None, "Адрес не распознан"
