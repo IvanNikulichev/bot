@@ -14,16 +14,21 @@ CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "you@example.com")
 POI_CSV = os.getenv("POI_CSV", "poi_csv.csv")
 MODEL_PATH = os.getenv("MODEL_PATH", "poi_ranker.cbm")
 MODEL_FEATURES = os.getenv("MODEL_FEATURES", "model_features.json")
+CATEGORIES_CSV = os.getenv("CATEGORIES_CSV", "catigories.csv")
 
 USE_MODEL = True
 
 # скорость и параметры построения
-WALK_SPEED_MPS = 1.2           # <— было 1.6, теперь 1.2 м/с
+WALK_SPEED_MPS = 1.2            # м/с
 CAND_POOL      = 60
-STOP_FIXED_S   = 3 * 60        # базовая остановка (для НЕ парков)
-STOP_PARK_S    = 30 * 60       # для парков
+STOP_FIXED_S   = 3 * 60         # базовая остановка (не парк)
+STOP_PARK_S    = 30 * 60        # парк
 TIME_TOL       = 0.20
-CLOSE_LOOP_KM  = 1.0           # желаемая дистанция финиша до старта
+CLOSE_LOOP_KM  = 1.0
+
+# приоритет интересов поверх модели — УСИЛЕНО
+MODEL_INTEREST_BOOST = 6.0
+RULES_INTEREST_WEIGHT = 12.0
 
 # вес закольцовки
 LOOP_WEIGHT_BASE   = 1.0
@@ -32,7 +37,7 @@ LOOP_BACK_DIVISOR  = 800.0
 # лимиты Telegram и Яндекс.Карт
 TG_HARD_LIMIT = 4096
 TG_SAFE_LIMIT = 4000
-YANDEX_MAX_POINTS = 20          # <— жёсткий лимит точек (включая старт)
+YANDEX_MAX_POINTS = 20
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(TOKEN)
@@ -44,15 +49,110 @@ ALIASES = {
     "московск":"Московский вокзал","ильинк":"улица Ильинская",
     "нижне-волж":"Нижне-Волжская набережная","верхне-волж":"Верхне-Волжская набережная",
     "покровск":"улица Большая Покровская","федоровск":"наб. Федоровского",
-    "стрелк":"метро Стрелака","канат":"Канатная дорога Нижний Новгород",
+    "стрелк":"метро Стрелка","канат":"Канатная дорога Нижний Новгород",
     "варварск":"улица Варварская","сенная":"площадь Сенная",
     "добролюб":"улица Добролюбова","ковалихин":"улица Ковалихинская","звездинк":"улица Звездинка",
 }
 
 INTERESTS = {
-    # … (без изменений, твой большой словарь интересов) …
     "coffee": {"кофе","кофей","coffee","эспрессо","espresso","капучино","латте","раф","флэт уайт","aeropress","аэропресс","v60","спешалти","specialty"},
-    # --- остальное содержимое INTERESTS оставлено как в прошлой версии ---
+    "tea": {"чай","tea","матча","маття","пуэр","улун","сенча","гойчай"},
+    "dessert": {"десерт","пирожн","эклер","макарон","чизкейк","маффин","кейк","штрудель","тирамису","выпечк","торт","морожен","ice cream","gelato"},
+    "bakery": {"пекарн","булочн","круассан","круасан","хлеб","багет","фокачч","bakery","boulangerie"},
+    "brunch": {"бранч","завтрак","скрэмбл","омлет","яичниц","авокадо тост","панкейк","pancake","французский тост"},
+    "pizza": {"пицц","pizzeria","пиццер"},
+    "pasta": {"паста","равиоли","тальятелле","спагетт","лазан"},
+    "steak": {"стейк","гриль","bbq","барбекю","брискет"},
+    "burger": {"бургер","burger","котлета","фри"},
+    "shawarma": {"шаурм","шаверм","донер","кебаб"},
+    "georgian": {"грузин","хинкал","хачапур","лобио","сацив"},
+    "italian": {"итал","траттор","остерия","risotto","рикотт"},
+    "japanese": {"япон","суши","ролл","рамен","удон","донбури","якитор"},
+    "chinese": {"китай","димсам","лапша по","бао","гунбао","сычуан"},
+    "korean": {"корее","кимчи","рамён","коги","ттокпокки","самгёпсаль"},
+    "thai": {"тайск","том ям","том кха","пад тай","сом там"},
+    "vietnamese": {"вьетнам","фо","бон бо","бан ми"},
+    "indian": {"индий","карри","наан","масала","тандури"},
+    "uzbek": {"узбек","плов","самса","лагман","манты"},
+    "caucasian": {"кавказ","шашлык","долма","чурчхел"},
+    "mexican": {"мексик","тако","буррито","начос","кесадиль"},
+    "turkish": {"турец","пиде","люля","донер","бахлава","баклава"},
+    "lebanese": {"ливан","хумус","фалафель","табуле","шаварма"},
+    "vegan": {"веган","vegan","plant-based","без мяса"},
+    "vegetarian": {"вегетари","vegetarian"},
+    "gluten_free": {"без глютен","gluten free"},
+    "halal": {"халал","halal"},
+    "kosher": {"кошер","kosher"},
+    "bar": {"бар","pub","паб","винн","вино","винный","сидр","крафт","пивн","brewery","пивовар","коктейл","cocktail","mixology","speakeasy","роофтап","rooftop"},
+    "hookah": {"кальян","hookah","shisha"},
+    "rooftop": {"rooftop","крыша","панорамный бар","видовой бар"},
+
+    "street_art": {"стрит-арт","street art","мурал","муралы","граффити"},
+    "gallery": {"галере","арт-цент","выставк","арт-пространств","art space","центр соврем"},
+    "museum": {"музей","экспозици","ретро","диорама"},
+    "theatre": {"театр","драм","опер","балет","сцена"},
+    "cinema": {"кино","cinema","movie","киноцентр"},
+    "music": {"концерт","клуб","джаз","рок","live","филармони"},
+    "monument": {"памятник","монумент","скульптур","стела","бюст"},
+    "library": {"библиотек","читальн","mediatheque"},
+    "bookstore": {"книжн","bookshop","bookstore"},
+
+    "history": {"историческ","купеческ","кремль","арсенал","фортификац","краевед","музей истории"},
+    "architecture": {"архитектур","фасад","особняк","доходн","усадебн","памятник архитектуры","ордер","пилястр"},
+    "baroque": {"барокк"},
+    "classicism": {"классицизм","ампир","empire"},
+    "art_nouveau": {"модерн","арт-нуво","jugendstil","сецессион"},
+    "constructivism": {"конструктивизм","авангар","советск модерн","баухауз"},
+    "brutalism": {"брутализм"},
+    "soviet_modernism": {"советск модерн","модернизм 60","нииб"},
+    "wooden": {"деревянн","резн","наличник","деревянное зодчество"},
+    "manor": {"усадьб","помещич","дворянск усадьб"},
+    "palace": {"дворец","палас"},
+    "fortress": {"крепост","форт","валы"},
+    "kremlin": {"кремль"},
+    "cemetery": {"кладбищ","некропол"},
+    "church": {"церковь","собор","храм","колокольн","монастыр","часовн","лавра"},
+    "mosque": {"мечет"},
+    "synagogue": {"синагог"},
+
+    "view": {"вид","виды","панорама","обзорная","обзорн","viewpoint","смотор","белведер","колесо обозр"},
+    "embankment": {"набережн","бережн","boulevard","bulvar","бульвар"},
+    "river_volga": {"волга","стрелка","ярмарочн площад"},
+    "river_oka": {"ока"},
+    "park": {"парк","сквер","сад","ботаническ","дендрар","аллея"},
+    "nature": {"лес","роща","овраг","ущелье","утес","берег","пляж","остров","луга","речн"},
+    "garden": {"сад","оранжере","ботсад"},
+
+    "kids": {"дет","коляск","семейн","игровая площад","playground","детск"},
+    "amusements": {"аттракцион","колесо обозр","парк развлечен","тир","квест","батут"},
+    "zoo": {"зоопарк","дельфинари","террариум","аквариум","питомник"},
+    "sport": {"спорт","скейтпарк","роллер","стадион","фитнес","workout","воркаут","кроссфит"},
+    "ice": {"каток","ледов","ice rink","хоккей"},
+    "swim": {"бассейн","аквапарк","сауна","термы","термальный"},
+    "climb": {"скалодром","скалолаз"},
+    "bike": {"велодорожк","прокат велосипед","bikeshare","самокат"},
+
+    "market": {"рынок","ярмарк","базар","фермерск","экомаркет","фудкорт","фуд-холл","gastronom","food hall"},
+    "mall": {"тц","торговый центр","mall","outlet","аутлет"},
+    "souvenir": {"сувенир","керамик","хохлом","гжель","резьб","ремесл","handmade","craft"},
+    "vintage": {"винтаж","блош","flea","секонд","second hand","комиссионн"},
+    "antique": {"антиквар","антик"},
+
+    "university": {"университет","вуз","кампус","академ"},
+    "science": {"научн","лаборатор","лектор","просветител"},
+    "planetarium": {"планетарий","обсерватор"},
+    "tech": {"технопарк","айти","it-парк","кластер","коворкинг","makerspace","фаблаб","лаборатори"},
+    "library_science": {"научная библиотек","техн библиотек"},
+
+    "railway": {"вокзал","железнодорож","депо","электродепо","ретро-поезд","музей ж/д","станция"},
+    "tram_museum": {"трамвайн музей","трамвайное депо"},
+    "bridge": {"мост","переправ","эстакад"},
+    "pier": {"пристан","пирс","причал","river port","речной вокзал"},
+    "cable_car": {"канатная дорог","ropeway","канатк","фуникулер","фуникулёр"},
+
+    "photo": {"фото","фотогенич","инстаграм","insta","ракурс","фотозон","street photo","sunset","закат","рассвет"},
+    "nightclub": {"клуб","night club","ночн клуб"},
+    "karaoke": {"караоке"},
     "concert": {"концерт","live","джаз-клуб","рок-клуб"},
 }
 
@@ -66,9 +166,7 @@ def haversine(a,b,c,d):
     h=math.sin(dphi/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return 2*R*math.asin(math.sqrt(h))
 
-# ---- чистим HTML и возвращаем ПОЛНОЕ описание ----
 _TAGS_RX = re.compile(r"<[^>]+>")
-
 def _clean_desc(text: str) -> str:
     if not text:
         return ""
@@ -86,6 +184,34 @@ def _parse_wkt_point(s:str):
         return lat,lon
     except: return None
 
+def _load_categories_map(path: str):
+    import pandas as pd
+    cat = {}
+    if not os.path.exists(path):
+        return cat
+    try:
+        df = pd.read_csv(path)
+        cols = {c.lower(): c for c in df.columns}
+        id_col = cols.get("poi_id") or cols.get("id") or cols.get("poi") or list(df.columns)[0]
+        cat_col = cols.get("categories") or cols.get("category") or list(df.columns)[1]
+        for _, row in df.iterrows():
+            pid = row.get(id_col)
+            cats_raw = row.get(cat_col, "")
+            try:
+                pid_int = int(str(pid).strip())
+            except:
+                continue
+            toks = []
+            for part in str(cats_raw).replace(";", ",").split(","):
+                t = part.strip().lower()
+                if t:
+                    toks.append(t)
+            if toks:
+                cat[pid_int] = set(toks)
+    except Exception as e:
+        logging.warning("Не удалось прочитать %s: %s", path, e)
+    return cat
+
 def load_poi(path=POI_CSV):
     import pandas as pd
     df=pd.read_csv(path)
@@ -96,19 +222,29 @@ def load_poi(path=POI_CSV):
     for col in ["title","description","kind"]:
         if col not in df.columns:
             df[col] = ""
-    # авто-теги по тексту
-    def tags_for(row):
+    if "id" not in df.columns:
+        df["id"] = range(1, len(df)+1)
+
+    def tags_from_text(row):
         t=(str(row.get("title",""))+" "+str(row.get("description",""))).lower()
         tags=set()
         for k,v in INTERESTS.items():
-            if any(w in t for w in v): tags.add(k)
+            if any(w in t for w in v):
+                tags.add(k)
         return tags
-    df["__tags__"]=df.apply(tags_for, axis=1)
+
+    df["__tags_auto__"]=df.apply(tags_from_text, axis=1)
+
+    user_map = _load_categories_map(CATEGORIES_CSV)
+    def tags_merge(row):
+        pid = int(row["id"])
+        user_tags = user_map.get(pid, set())
+        return set(user_tags) | set(row["__tags_auto__"])
+
+    df["__tags__"] = df.apply(tags_merge, axis=1)
+    df["__desc_clean__"] = df["description"].map(_clean_desc)
     for col in ["popularity","rating"]:
         if col not in df.columns: df[col]=None
-    if "id" not in df.columns:
-        df["id"] = range(1, len(df)+1)
-    df["__desc_clean__"] = df["description"].map(_clean_desc)
     return df
 
 POI = load_poi()
@@ -172,17 +308,24 @@ def build_candidate_features(lat0, lon0, text_raw, hours, want_tags, pool=CAND_P
     return df, rows_meta
 
 def rank_candidates(lat0, lon0, want_tags, text_raw, hours):
+    want_tags = set(want_tags or [])
+
     if USE_MODEL and model is not None:
         X, meta = build_candidate_features(lat0, lon0, text_raw, hours, want_tags, pool=CAND_POOL)
         preds = model.predict(X)
-        scored = list(zip(preds, meta))
-        scored.sort(key=lambda x: float(x[0]), reverse=True)
-        return [(None, dist, r, ov) for (pred, (dist, r, ov)) in scored]
+        scored = []
+        for p, (dist, r, ov) in zip(preds, meta):
+            hybrid = float(p) + MODEL_INTEREST_BOOST * float(ov)
+            scored.append((hybrid, dist, r, ov))
+        scored.sort(key=lambda x: (x[0], -x[3], -1.0/x[1] if x[1] else 0.0), reverse=True)
+        return [(sc, dist, r, ov) for (sc, dist, r, ov) in scored]
+
+    # фолбэк-правила
     rows=[]
     for r in POI.itertuples(index=False):
         dist = haversine(lat0, lon0, r.lat, r.lon)
         overlap = len(want_tags & getattr(r,"__tags__", set())) if want_tags else 0
-        score = 2.0*overlap - dist/400.0
+        score = RULES_INTEREST_WEIGHT*overlap - dist/400.0
         rows.append((score, dist, r, overlap))
     rows.sort(reverse=True, key=lambda x: x[0])
     if want_tags:
@@ -207,7 +350,8 @@ def _is_park_row(r) -> bool:
 
 def build_route(lat0, lon0, hours, interests_raw, text_raw):
     """
-    Мягкая закольцовка + лимит точек до 20 (включая старт в ссылке).
+    Жёсткий приоритет интересов: сперва подбираем только совпадающие POI.
+    Если уложиться по времени не получается, разрешаем добавлять нематч.
     """
     want = canon_interests(interests_raw)
     cand = rank_candidates(lat0, lon0, want, text_raw, hours)
@@ -220,21 +364,25 @@ def build_route(lat0, lon0, hours, interests_raw, text_raw):
     dwell_sum = 0.0
     dwell_list = []
 
-    # Жёсткий лимит точек в маршруте (кроме старта в тексте; но для ссылки важно <= 20)
-    ROUTE_MAX_POINTS = min(50, YANDEX_MAX_POINTS - 1)  # -1 потому что старт = 1 точка в ссылке
+    ROUTE_MAX_POINTS = min(50, YANDEX_MAX_POINTS - 1)
+    require_match = True if want else False  # первая фаза — только совпадающие
 
     while True:
-        # стоп по количеству
         if len(route) >= ROUTE_MAX_POINTS:
             break
 
         progress = ((walk_dist / WALK_SPEED_MPS) + dwell_sum) / max(1.0, target)
         progress = max(0.0, min(1.5, progress))
+
         best = None
+        matched_found = False
 
         for score0, _, r, ov in cand[:30]:
             if r.id in used:
                 continue
+            if require_match and (ov or 0) == 0:
+                continue  # пока ищем только совпадающие
+
             leg = haversine(cur[0], cur[1], r.lat, r.lon)
             dwell_add = STOP_PARK_S if _is_park_row(r) else STOP_FIXED_S
             total_if_add = (walk_dist + leg) / WALK_SPEED_MPS + (dwell_sum + dwell_add)
@@ -244,15 +392,25 @@ def build_route(lat0, lon0, hours, interests_raw, text_raw):
 
             back_to_start = haversine(r.lat, r.lon, lat0, lon0)
             loop_penalty = (progress ** 2) * LOOP_WEIGHT_BASE * (back_to_start / LOOP_BACK_DIVISOR)
-            val = (1.5 * (ov or 0)) - (leg / 500.0) - loop_penalty
+
+            # УСИЛЕННЫЙ вклад категорий: 6 * ov + бонус за несколько совпадений
+            cat_term = 6.0 * float(ov or 0.0) + (3.0 if (ov or 0) >= 2 else 0.0)
+            val = cat_term - (leg / 500.0) - loop_penalty
+
+            if (ov or 0) > 0:
+                matched_found = True
 
             if (best is None) or (val > best[0]):
-                best = (val, leg, r, dwell_add)
+                best = (val, leg, r, dwell_add, ov)
 
         if best is None:
+            # если в фазе совпадений ничего не нашли — ослабляем требование
+            if require_match:
+                require_match = False
+                continue
             break
 
-        _, leg, r, dwell_add = best
+        _, leg, r, dwell_add, ov = best
         route.append((r, leg))
         used.add(r.id)
         walk_dist += leg
@@ -263,6 +421,10 @@ def build_route(lat0, lon0, hours, interests_raw, text_raw):
         if ((walk_dist / WALK_SPEED_MPS) + dwell_sum) >= target * (1 - TIME_TOL):
             break
 
+        # если мы уже набрали хотя бы один матч — можно ослабить требование, чтобы добрать время
+        if require_match and matched_found:
+            require_match = False
+
     walk_time = walk_dist / WALK_SPEED_MPS
     total_time = walk_time + dwell_sum
     return route, walk_dist, walk_time, dwell_list, total_time
@@ -272,11 +434,10 @@ def hhmm(seconds):
     h, m = divmod(m, 60)
     return (f"{h} ч {m:02d} мин" if h else f"{m} мин")
 
-# ---- ссылка на Яндекс.Картах ----
 def make_yamaps_link(start_ll, route, max_pts=YANDEX_MAX_POINTS, close_loop=False):
     pts = [f"{start_ll[0]:.6f},{start_ll[1]:.6f}"]
     for r, _ in route:
-        if len(pts) >= max_pts:   # <— не больше 20 точек суммарно
+        if len(pts) >= max_pts:
             break
         pts.append(f"{r.lat:.6f},{r.lon:.6f}")
     if close_loop and len(pts) < max_pts:
@@ -284,7 +445,10 @@ def make_yamaps_link(start_ll, route, max_pts=YANDEX_MAX_POINTS, close_loop=Fals
     rtext = "~".join(pts)
     return f"https://yandex.ru/maps/?rtext={quote_plus(rtext)}&rtt=pedestrian"
 
-# ---------------- Утилита: отправка длинных сообщений ----------------
+# ---------------- Резка длинных сообщений ----------------
+TG_HARD_LIMIT = 4096
+TG_SAFE_LIMIT = 4000
+
 def _chunk_text(txt: str, limit: int = TG_SAFE_LIMIT):
     if len(txt) <= limit:
         return [txt]
@@ -427,7 +591,6 @@ async def on_text(m:Message):
             tsec += dwell_i
             cur=(r.lat,r.lon)
 
-        # ---- закольцовка: если финиш далеко, учесть возврат и замкнуть ссылку
         close_loop = False
         if route:
             last_lat, last_lon = route[-1][0].lat, route[-1][0].lon
@@ -441,7 +604,6 @@ async def on_text(m:Message):
             else:
                 lines.append(f"\nФиниш в пределах ≈{back_km:.1f} км от старта — возврат можно не учитывать.")
 
-        # ссылка на Яндекс.Карты (не более 20 точек)
         url = make_yamaps_link((lat, lon), route, max_pts=YANDEX_MAX_POINTS, close_loop=close_loop)
         lines.append(f"Ссылка на маршрут в Яндекс.Картах:\n{url}")
 
