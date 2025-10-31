@@ -1,45 +1,53 @@
-# geo_utils.py
 import os
 import re
 import requests
 
-CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "you@example.com")
+CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "IvanNikulich2006@yandex.ru")
 
 # координаты вида "56.32, 44.01"
 COORD_RX = re.compile(r"([+-]?\d{1,2}(?:[.,]\d+))\s*[, ]\s*([+-]?\d{1,3}(?:[.,]\d+))")
 
 # хватаем кусок после маркеров "я на/у, старт от, рядом с ..."
-SPAN_RX  = re.compile(r"(?:^|\b)(?:от|старт(?:ую)?(?:\s+от)?|я у|я возле|я на|на|у|рядом с)\s+([^.,;:!?]+)", re.I)
+SPAN_RX = re.compile(
+    r"(?:^|\b)(?:от|старт(?:ую)?(?:\s+от)?|я у|я возле|я на|на|у|рядом с)\s+([^.,;:!?]+)",
+    re.I,
+)
 
 # простая форма: тип + имя (в одном падеже)
 SIMPLE_ADDR_RX = re.compile(
     r"\b(улиц[аыеиу]|ул\.?|площад[ьиью]|пл\.?|набережн(?:ая|ой|ую|е)|наб\.?)\s+([А-ЯЁA-Z][\w\-]+)",
-    re.I
+    re.I,
 )
+
 
 # приведение косвенных падежей к нормальной форме слова типа
 def _normalize_type(s: str) -> str:
     t = s.lower().strip(" .")
-    if t.startswith(("ул", "улиц")):       return "улица"
-    if t.startswith(("пл", "площад")):     return "площадь"
-    if t.startswith(("наб", "набережн")):  return "набережная"
+    if t.startswith(("ул", "улиц")):
+        return "улица"
+    if t.startswith(("пл", "площад")):
+        return "площадь"
+    if t.startswith(("наб", "набережн")):
+        return "набережная"
     return s
 
-# очень простая «лемматизация» последнего прилагательного: Львовской → Львовская, Советской → Советская
+
 def _adj_feminative_nom(word: str) -> str:
     w = word
-    if w.endswith("ской"):   return w[:-3] + "ская"
-    if w.endswith("цкой"):   return w[:-3] + "цкая"
-    if w.endswith("ой"):     return w[:-2] + "ая"
-    if w.endswith("ей"):     return w[:-2] + "ея"
+    if w.endswith("ской"):
+        return w[:-3] + "ская"
+    if w.endswith("цкой"):
+        return w[:-3] + "цкая"
+    if w.endswith("ой"):
+        return w[:-2] + "ая"
+    if w.endswith("ей"):
+        return w[:-2] + "ея"
     return w
 
+
 def _canon_toponym(text: str) -> str:
-    """
-    Делает «на улице Львовской» → «улица Львовская»,
-    «набережной Федоровского» → «набережная Федоровского».
-    """
-    s = text.strip(' "\'«»')
+    
+    s = text.strip(" \"'«»")
     # сначала попробуем простой «тип + имя»
     m = SIMPLE_ADDR_RX.search(s)
     if m:
@@ -60,7 +68,9 @@ def _canon_toponym(text: str) -> str:
         # если «улице Львовской» без явного матча
         frag = re.sub(r"\b(улице|улицу|улицы|ул\.)\b", "улица", frag, flags=re.I)
         frag = re.sub(r"\b(площади|площадью|пл\.)\b", "площадь", frag, flags=re.I)
-        frag = re.sub(r"\b(набережной|набережную|наб\.)\b", "набережная", frag, flags=re.I)
+        frag = re.sub(
+            r"\b(набережной|набережную|наб\.)\b", "набережная", frag, flags=re.I
+        )
         # последнее слово как имя
         parts = frag.split()
         if parts and parts[0].lower() in {"улица", "площадь", "набережная"}:
@@ -69,6 +79,7 @@ def _canon_toponym(text: str) -> str:
         return frag
 
     return s
+
 
 def _iter_hints(text: str):
     """
@@ -87,9 +98,10 @@ def _iter_hints(text: str):
         yield f"{typ} {name}"
 
     # 3) сырая строка как есть
-    tail = text.strip(' "\'«»')
+    tail = text.strip(" \"'«»")
     if tail:
         yield tail
+
 
 def parse_start(text: str):
     """

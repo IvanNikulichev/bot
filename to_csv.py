@@ -2,16 +2,17 @@ import csv
 import os
 from io import StringIO
 
-def append_raw_block_to_csv(block_text: str, filename: str = 'queries_raw.csv'):
+
+def append_raw_block_to_csv(block_text: str, filename: str = "queries_raw.csv"):
     """
     Добавляет блок запросов в CSV-файл.
     Первую строку (заголовок) пропускает.
     Остальные строки дописывает как есть.
     """
-    lines = block_text.strip().split('\n')
-    
+    lines = block_text.strip().split("\n")
+
     # Пропускаем заголовок, если он есть
-    if lines and lines[0].strip().lower() == 'query_id,text':
+    if lines and lines[0].strip().lower() == "query_id,text":
         data_lines = lines[1:]
     else:
         data_lines = lines
@@ -19,12 +20,12 @@ def append_raw_block_to_csv(block_text: str, filename: str = 'queries_raw.csv'):
     # Убедимся, что файл существует или создадим с заголовком
     file_exists = os.path.exists(filename)
     if not file_exists:
-        with open(filename, 'w', encoding='utf-8', newline='') as f:
+        with open(filename, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(['query_id', 'text'])
+            writer.writerow(["query_id", "text"])
 
     # Дописываем данные
-    with open(filename, 'a', encoding='utf-8', newline='') as f:
+    with open(filename, "a", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         for line in data_lines:
             line = line.strip()
@@ -37,15 +38,16 @@ def append_raw_block_to_csv(block_text: str, filename: str = 'queries_raw.csv'):
                 writer.writerow([row[0], row[1]])
             elif row and len(row) == 1:
                 # На случай, если text отсутствует
-                writer.writerow([row[0], ''])
+                writer.writerow([row[0], ""])
             # Игнорируем пустые строки
 
     print(f"Добавлено {len(data_lines)} строк в {filename}.")
 
+
 # === Пример использования ===
 if __name__ == "__main__":
     # Вставьте сюда ваш блок (50 строк с query_id,text)
-    user_block = '''
+    user_block = """
 query_id,text
 Q0551,"Меня интересует история и культура, хочу обойти историчсекие места Нижнего за 3 часа 15 минут, сейчас я нвхожусь около памятника Максиму Горькому"
 Q0552,"Старт от ул. Минина, 5. 2 часа. Интересует архитектура модерн и где выпить хороший эспрессо."
@@ -498,6 +500,6 @@ Q0998,"Нахожусь на 56.248, 43.968. 2 часа. Ищу детскую �
 Q0999,"1.5 часа. От ул. Обская. Ищу виды на реку."
 Q1000,"2 часа. От ул. Откосная. Ищу смотровые площадки на откосе."
 Q1001,"У меня 1 час. Я у 'Пятерочки' на ул. Жукова. Куда сходить?"
-'''
+"""
 
     append_raw_block_to_csv(user_block)

@@ -1,164 +1,278 @@
-# build_features.py
-import math, json, sys, pandas as pd, numpy as np
-from sentence_transformers import SentenceTransformer
+import sys, math, json, argparse
+import pandas as pd
+import numpy as np
 
-EMB = None
-def ensure_emb():
-    global EMB
-    if EMB is None:
-        EMB = SentenceTransformer("intfloat/multilingual-e5-small")  # CPU ОК
+PARK_STAY_MIN = 30.0
+DEFAULT_STAY_MIN = 3.0
 
-def hav_km(a,b):
-    R=6371.0
-    la1,lo1,la2,lo2 = map(math.radians,[a[0],a[1],b[0],b[1]])
-    dlat=la2-la1; dlon=lo2-lo1
-    s=math.sin(dlat/2)**2+math.cos(la1)*math.cos(la2)*math.sin(dlon/2)**2
-    return 2*R*math.asin(min(1.0, math.sqrt(s)))
+NUM = [
+    "distance_km",
+    "inv_distance",
+    "log_distance",
+    "rank_by_distance",
+    "hours",
+    "poi_pop_local",
+    "eta_walk_min",
+    "stay_min",
+    "semantic_cos",
+    "token_overlap",
+    "interest_match_count",
+]
+BIN = ["kind_match", "view_hint", "eta_fit"]
+HB = ["hb_le1", "hb_1_2", "hb_2_3", "hb_gt3", "hb_unknown"]
+KIND = [
+    "kind_cafe",
+    "kind_dessert",
+    "kind_museum",
+    "kind_viewpoint",
+    "kind_street_art",
+    "kind_historic",
+    "kind_architecture",
+    "kind_park",
+]
+COLS = NUM + BIN + HB + KIND
 
-def hours_bin(h):
-    if h is None: return "unknown"
-    if h<=1: return "le1"
-    if h<=2: return "1_2"
-    if h<=3: return "2_3"
-    return "gt3"
 
-KIND_MAP = {
-    "viewpoint":"view","street_art":"street_art","architecture":"architecture",
-    "historic":"history","museum":"museum","cafe":"coffee","dessert":"dessert",
-    "park":"park","attraction":"history","other":"other"
-}
-KIND_LIST = ["cafe","dessert","museum","viewpoint","street_art","historic","architecture","park"]
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dphi = p2 - p1
+    dl = np.radians(lon2 - lon1)
+    h = np.sin(dphi / 2.0) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dl / 2.0) ** 2
+    return 2.0 * R * np.arcsin(np.sqrt(h))
 
-def stay_min(kind):
-    return {"cafe":20,"dessert":20,"museum":45,"viewpoint":25,
-            "street_art":25,"historic":30,"architecture":30,"park":25}.get(kind,30)
 
-def poi_text(row):
-    tags = row.get("tags")
-    if isinstance(tags, str):
-        try: tags = json.loads(tags)
-        except: tags = {}
-    parts = [str(row.get("name","")), str(row.get("kind",""))]
-    if isinstance(tags, dict):
-        for k in ("cuisine","amenity","shop","tourism","artwork_type","description","name:ru","alt_name"):
-            if tags.get(k): parts.append(str(tags[k]))
-    return " | ".join([p for p in parts if p])
+def safe_num_series(df: pd.DataFrame, name: str, default: float = 0.0) -> pd.Series:
+    """Вернёт числовую Series длины df, даже если столбца нет."""
+    if name in df.columns:
+        return pd.to_numeric(df[name], errors="coerce").fillna(default)
+    return pd.Series(np.full(len(df), default, dtype=float), index=df.index)
 
-def cosine(a:np.ndarray, b:np.ndarray) -> float:
-    if a is None or b is None: return 0.0
-    return float(np.dot(a, b))
 
-def embed(texts:list[str]) -> np.ndarray:
-    ensure_emb()
-    return EMB.encode(texts, normalize_embeddings=True)
+def safe_text_series(df: pd.DataFrame, name: str) -> pd.Series:
+    if name in df.columns:
+        return df[name].astype(str).fillna("").str.strip()
+    return pd.Series([""] * len(df), index=df.index)
 
-def parse_coord_point(geom:str):
-    # "POINT (44.003277 56.331576)" → lat,lon
-    if not isinstance(geom, str): return None
-    m = geom.strip().replace(",", " ").split()
-    # ожидаем POINT (lon lat)
+
+def parse_wkt_point(s: str):
+    if not isinstance(s, str):
+        return np.nan, np.nan
     try:
-        lon = float(m[-2].strip("POINT()"))
-        lat = float(m[-1].strip("POINT()"))
+        inner = s[s.find("(") + 1 : s.find(")")].replace(",", " ")
+        lon, lat = [float(x) for x in inner.split()]
         return lat, lon
-    except:
-        return None
+    except Exception:
+        return np.nan, np.nan
 
-def radius_by_hours(h):
-    if not h: return 3000
-    if h <= 1: return 1200
-    if h <= 2: return 2200
-    if h <= 3: return 3200
-    if h <= 4: return 4000
-    return 5000
 
-def build_features(queries_csv:str, poi_csv:str, out_parquet:str, max_candidates:int=30):
-    q = pd.read_csv(queries_csv)
-    p = pd.read_csv(poi_csv) if poi_csv.endswith(".csv") else pd.read_excel(poi_csv)
-    # нормализуем координаты POI (поддержка колонки "coordinate" как на скрине)
-    if "lat" not in p.columns or "lon" not in p.columns:
-        if "coordinate" in p.columns:
-            coords = p["coordinate"].apply(parse_coord_point)
-            p["lat"] = coords.apply(lambda x: x[0] if x else None)
-            p["lon"] = coords.apply(lambda x: x[1] if x else None)
-    p = p.dropna(subset=["lat","lon"]).copy()
-    if "kind" not in p.columns:
-        p["kind"] = "other"
-    if "name" not in p.columns and "title" in p.columns:
-        p["name"] = p["title"]
+def load_poi(poi_csv: str, cats_csv: str | None):
+    poi = pd.read_csv(poi_csv)
 
-    # эмбеддинги запроса и POI
-    q["q_emb"] = list(embed(q["text"].fillna("").tolist()))
-    p["p_text"] = p.apply(poi_text, axis=1)
-    p["p_emb"] = list(embed(p["p_text"].tolist()))
+    if "lat" not in poi.columns or "lon" not in poi.columns:
+        if "coordinate" in poi.columns:
+            latlon = poi["coordinate"].apply(parse_wkt_point)
+            poi["lat"] = latlon.apply(lambda x: x[0])
+            poi["lon"] = latlon.apply(lambda x: x[1])
+    poi = poi.copy()
+    poi["lat"] = pd.to_numeric(poi.get("lat", np.nan), errors="coerce")
+    poi["lon"] = pd.to_numeric(poi.get("lon", np.nan), errors="coerce")
+    poi = poi.dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
-    rows=[]
-    for qr in q.itertuples(index=False):
-        try:
-            lat, lon = float(qr.start_lat), float(qr.start_lon)
-        except:
-            # без координат кандидаты строить нельзя
+    for c in ["title", "description", "tags", "kind", "address"]:
+        poi[c] = safe_text_series(poi, c).str.lower()
+
+    for c in ["popularity", "rating", "poi_pop_local"]:
+        poi[c] = safe_num_series(poi, c, 0.0)
+
+    if "id" not in poi.columns:
+        poi["id"] = np.arange(1, len(poi) + 1, dtype=int)
+
+    poi["__cats__"] = [[] for _ in range(len(poi))]
+    if cats_csv:
+        cats = pd.read_csv(cats_csv)
+        key = "poi_id" if "poi_id" in cats.columns else "id"
+        val = "categories" if "categories" in cats.columns else cats.columns[-1]
+        mp = {}
+        for r in cats.itertuples(index=False):
+            rid = getattr(r, key)
+            raw = getattr(r, val)
+            if isinstance(raw, str):
+                toks = [
+                    t.strip().lower()
+                    for t in raw.replace("|", ",").split(",")
+                    if t.strip()
+                ]
+            else:
+                toks = []
+            mp[rid] = toks
+        poi["__cats__"] = poi["id"].map(lambda x: mp.get(x, []))
+
+    return poi
+
+
+def load_queries(q_csv: str):
+    q = pd.read_csv(q_csv)
+    q["query_id"] = safe_text_series(q, "query_id")
+    q["text"] = safe_text_series(q, "text").str.lower()
+    q["hours"] = (
+        pd.to_numeric(q.get("hours", np.nan), errors="coerce")
+        .fillna(2.0)
+        .clip(lower=0.25, upper=12.0)
+    )
+
+    # стартовые координаты
+    q["start_lat"] = pd.to_numeric(q.get("start_lat", np.nan), errors="coerce")
+    q["start_lon"] = pd.to_numeric(q.get("start_lon", np.nan), errors="coerce")
+
+    # интересы: в колонке interests_set может быть строка "a;b;c" или "['a','b']"
+    def parse_interests(s: str):
+        if not isinstance(s, str) or not s.strip():
+            return set()
+        s = s.strip().strip("[]")
+        s = s.replace(";", ",")
+        toks = [t.strip(" '\"").lower() for t in s.split(",") if t.strip(" '\"")]
+        return set(toks)
+
+    q["interests"] = safe_text_series(q, "interests_set").apply(parse_interests)
+    return q
+
+
+def stay_minutes(kind: str) -> float:
+    if isinstance(kind, str) and "park" in kind:
+        return PARK_STAY_MIN
+    return DEFAULT_STAY_MIN
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("queries_csv")
+    ap.add_argument("poi_csv")
+    ap.add_argument("out_parquet")
+    ap.add_argument("top_k", type=int, nargs="?", default=30)
+    ap.add_argument("--cats", default=None, help="CSV с категориями: poi_id,categories")
+    args = ap.parse_args()
+
+    q = load_queries(args.queries_csv)
+    poi = load_poi(args.poi_csv, args.cats)
+
+    rows = []
+    for qi, qrow in q.iterrows():
+        lat0, lon0 = qrow["start_lat"], qrow["start_lon"]
+        if np.isnan(lat0) or np.isnan(lon0):
+            # если нет старта — пропустим
             continue
-        start=(lat,lon)
-        rad = radius_by_hours(qr.hours)
-        cand = p.copy()
-        cand["distance_km"] = ((cand["lat"]-start[0])**2 + (cand["lon"]-start[1])**2)**0.5 * 111.0  # быстрая оценка
-        cand = cand[cand["distance_km"] <= rad/1000 + 2.0]  # небольшой запас
-        cand = cand.sort_values("distance_km").head(max_candidates).copy()
-        if cand.empty: 
-            continue
 
-        # локальная доля kind
-        kind_share = (cand["kind"].value_counts(normalize=True)).to_dict()
+        # расстояние до всех POI
+        dist = haversine_km(lat0, lon0, poi["lat"].values, poi["lon"].values)
+        order = np.argsort(dist)[: max(args.top_k, 1)]
+        sub = poi.iloc[order].copy()
+        sub_dist = dist[order]
 
-        # интересы
-        try:
-            interests = set(json.loads(qr.interests_set)) if isinstance(qr.interests_set, str) else set()
-        except:
-            interests = set()
+        # текст запроса
+        qtext = qrow["text"]
+        qinter = qrow["interests"]
 
-        # признаки по каждому POI
-        for rank, pr in enumerate(cand.itertuples(index=False), 1):
-            kmap = KIND_MAP.get(pr.kind, "other")
-            kind_oh = {f"kind_{k}": int(pr.kind == k) for k in KIND_LIST}
-            hb = hours_bin(qr.hours)
-            hb_oh = {f"hb_{k}": int(hb==k) for k in ["le1","1_2","2_3","gt3","unknown"]}
+        def tok_overlap(r):
+            txt = f"{r.get('title','')} {r.get('description','')} {r.get('tags','')}"
+            cnt = 0
+            for tok in qinter:
+                if tok and tok in txt:
+                    cnt += 1
+            return cnt
 
-            invd = 1.0/(1.0+pr.distance_km)
-            logd = math.log1p(pr.distance_km)
-            sem = cosine(qr.q_emb, pr.p_emb)
-            eta_walk = max(4.0, pr.distance_km/0.07)
-            sm = float(stay_min(pr.kind))
-            eta_fit = int(eta_walk + sm <= (qr.hours or 2.0)*60.0)
+        # kind flags
+        def has_kind(r, name):
+            k = r.get("kind", "")
+            return 1 if isinstance(k, str) and name in k else 0
 
-            rows.append({
-                "query_id": qr.query_id,
-                "poi_id": getattr(pr, "id", getattr(pr, "poi_id", rank)),
-                "name": pr.name,
-                "kind": pr.kind,
-                "distance_km": pr.distance_km,
-                "inv_distance": invd,
-                "log_distance": logd,
-                "rank_by_distance": rank,
-                "hours": float(qr.hours) if qr.hours else 2.0,
-                **hb_oh,
-                "kind_match": int(kmap in interests),
-                "interest_match_count": int(kmap in interests),
-                "semantic_cos": sem,
-                "token_overlap": 0.0,  # можно добавить позже
-                "view_hint": int(("вид" in qr.text.lower() or "панорам" in qr.text.lower()) and pr.kind in ("viewpoint","attraction")),
-                **kind_oh,
-                "poi_pop_local": float(kind_share.get(pr.kind, 0.0)),
-                "eta_walk_min": eta_walk,
-                "stay_min": sm,
-                "eta_fit": eta_fit,
-            })
+        # признаки
+        f = pd.DataFrame(
+            {
+                "distance_km": sub_dist,
+                "inv_distance": 1.0 / (1e-6 + sub_dist),
+                "log_distance": np.log1p(sub_dist),
+                "rank_by_distance": pd.Series(sub_dist).rank(method="dense").values,
+                "hours": float(qrow["hours"]),
+                "poi_pop_local": sub["poi_pop_local"].astype(float).values,
+                "eta_walk_min": (
+                    sub_dist / (1.2 * 60 / 1000.0)
+                ), 
+                "stay_min": sub["kind"].map(stay_minutes).astype(float).values,
+                "semantic_cos": 0.0,
+                "token_overlap": sub.apply(tok_overlap, axis=1).astype(float).values,
+                "interest_match_count": sub.apply(
+                    lambda r: sum(
+                        1 for t in qinter if t and t in r.get("__cats__", [])
+                    ),
+                    axis=1,
+                )
+                .astype(float)
+                .values,
+                "kind_match": sub.apply(
+                    lambda r: (
+                        1 if any(t in (r.get("__cats__", [])) for t in qinter) else 0
+                    ),
+                    axis=1,
+                )
+                .astype(int)
+                .values,
+                "view_hint": sub["tags"]
+                .str.contains("view|панорам", case=False, na=False)
+                .astype(int)
+                .values,
+                "eta_fit": 1,
+            }
+        )
 
-    df = pd.DataFrame(rows)
-    df.to_parquet(out_parquet, index=False)
-    print(f"features: {len(df)} rows -> {out_parquet}")
+        hb = pd.DataFrame(
+            {
+                "hb_le1": int(qrow["hours"] <= 1.0),
+                "hb_1_2": int(1.0 < qrow["hours"] <= 2.0),
+                "hb_2_3": int(2.0 < qrow["hours"] <= 3.0),
+                "hb_gt3": int(qrow["hours"] > 3.0),
+                "hb_unknown": 0,
+            },
+            index=f.index,
+        )
+        f = pd.concat([f, hb], axis=1)
+
+        for kname in [
+            "cafe",
+            "dessert",
+            "museum",
+            "viewpoint",
+            "street_art",
+            "historic",
+            "architecture",
+            "park",
+        ]:
+            f[f"kind_{kname}"] = (
+                sub["kind"].str.contains(kname, case=False, na=False).astype(int).values
+            )
+
+        f["query_id"] = qrow["query_id"]
+        f["poi_id"] = sub["id"].values
+        f["lat"] = sub["lat"].values
+        f["lon"] = sub["lon"].values
+        f["title"] = sub["title"].values
+        f["tags_str"] = sub["tags"].values
+
+        for c in COLS:
+            if c not in f.columns:
+                f[c] = 0
+        f = f[["query_id", "poi_id", "lat", "lon", "title", "tags_str"] + COLS]
+
+        rows.append(f)
+
+    out = (
+        pd.concat(rows, ignore_index=True)
+        if rows
+        else pd.DataFrame(columns=["query_id", "poi_id"] + COLS)
+    )
+    out.to_parquet(args.out_parquet, index=False)
+    print(f"features: {len(out)} rows -> {args.out_parquet}")
+
 
 if __name__ == "__main__":
-    # usage: python build_features.py queries_parsed.csv poi.csv features.parquet [max_candidates]
-    mc = int(sys.argv[4]) if len(sys.argv)>4 else 30
-    build_features(sys.argv[1], sys.argv[2], sys.argv[3], mc)
+    main()
