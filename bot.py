@@ -5,6 +5,11 @@ from aiogram.types import Message
 from aiogram.filters import CommandStart
 from dotenv import load_dotenv
 from geo_utils import parse_start
+from aiogram import Dispatcher
+dp = Dispatcher()  
+def get_dispatcher():
+    return dp
+
 
 load_dotenv()
 
@@ -821,4 +826,17 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    from aiogram import Bot
+    token = os.getenv("TELEGRAM_BOT_TOKEN")  # ты уже читаешь его так
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+
+    bot = Bot(token)
+
+    async def _main():
+        await dp.start_polling(
+            bot, allowed_updates=dp.resolve_used_update_types()
+        )
+
+    asyncio.run(_main())
