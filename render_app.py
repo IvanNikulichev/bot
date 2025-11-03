@@ -1,4 +1,4 @@
-
+from bot import ensure_data
 import os
 from fastapi import FastAPI, Request, HTTPException
 from aiogram import Bot
@@ -20,8 +20,12 @@ app = FastAPI()
 @app.on_event("startup")
 async def on_startup():
     if not WEBHOOK_URL:
-        raise RuntimeError("RENDER_EXTERNAL_URL/BASE_URL не установлен(а)")
+        raise RuntimeError("RENDER_EXTERNAL_URL/BASE_URL is not set")
     await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+    try:
+        ensure_data()
+    except Exception:
+        pass
 
 @app.on_event("shutdown")
 async def on_shutdown():
