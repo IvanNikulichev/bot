@@ -5,7 +5,7 @@ from aiogram import Bot
 from aiogram.types import Update
 from bot import dp  
 
-TOKEN = os.environ["TELEGRAM_TOKEN"]
+TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 SECRET = os.environ.get("WEBHOOK_SECRET", "dev-secret")
 BASE = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 if not BASE:
