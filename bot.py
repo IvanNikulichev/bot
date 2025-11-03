@@ -401,7 +401,18 @@ def load_poi(path=POI_CSV):
     return df
 
 
-POI = load_poi()
+POI = None
+def ensure_data():
+    """Ленивая инициализация данных для маршрутов."""
+    global POI
+    if POI is not None:
+        return
+    try:
+        import pandas as pd  # noqa: F401
+    except ImportError:
+        raise RuntimeError("pandas not installed; disable ML or add it to requirements")
+    POI = load_poi()
+
 
 # ---- модель ----
 model = None
